@@ -38,13 +38,61 @@ module SURender
 
   # ⚠️ Ruby 不允许在方法内给常量赋值（dynamic constant assignment），
   #    因此这些可变配置一律用实例变量承载。
-  def self.configure(views:, out_dir:, cx: 0.0, cz: 0.0, style: {})
+  def self.configure(views:, out_dir:, cx: 0.0, cz: 0.0, style: {},
+                     bg: nil, sky: nil, gradient: nil, sun: nil,
+                     light: nil, dark: nil,
+                     fog_color: nil, fog_start: nil, fog_end: nil)
     VIEWS.replace(views)
-    @out   = out_dir
-    @cx    = cx
-    @cz    = cz
-    @style = style
+    @out      = out_dir
+    @cx       = cx
+    @cz       = cz
+    @style    = style
+    @bg       = bg          # 背景色 0xRRGGBB；黄昏图要暖灰蓝，不是纯白
+    @sky      = sky         # false 关天空（否则天空色会盖过背景色）
+    @gradient = gradient    # false 关天空渐变，得到纯色背景
+    @sun      = sun         # Sketchup::Time，控制太阳高度角 → 长影与暖光
+    @light    = light       # 阴影面板「亮」滑杆 0—100，默认 70
+    @dark     = dark        # 阴影面板「暗」滑杆 0—100，默认 25（调高 → 影子更重）
+    @fog      = fog_color   # 雾色 0xRRGGBB；★ 出图去地平线硬边的关键，见下
+    @fog0     = fog_start   # 雾起距离（米）
+    @fog1     = fog_end     # 雾终距离（米）
     true
+  end
+
+  def self.bg
+    @bg
+  end
+
+  def self.sky
+    @sky
+  end
+
+  def self.gradient
+    @gradient
+  end
+
+  def self.sun
+    @sun
+  end
+
+  def self.light
+    @light
+  end
+
+  def self.dark
+    @dark
+  end
+
+  def self.fog
+    @fog
+  end
+
+  def self.fog0
+    @fog0
+  end
+
+  def self.fog1
+    @fog1
   end
 
   def self.cx
@@ -73,6 +121,17 @@ module SURender
 
   def self.pt(x, y, z)
     Geom::Point3d.new(x.m, y.m, z.m)
+  end
+
+  # --------------------------------------------------- 当地时刻 → ShadowTime ---
+  # ★ 实测坑（很隐蔽）：SketchUp 取 Time 的 **UTC 墙钟** 当作场地当地时刻。
+  #   直接 si['ShadowTime'] = Time.new(2026,9,29,17,5) 得到的是「上午 09:05」的太阳
+  #   （实测高度角 34.4°、方位角 117.5°），无论怎么调都不像黄昏；
+  #   补上本机 UTC 偏移后，17:05 才给出高度角 13.3°、方位角 259.0°（正西略偏南）。
+  #   凡是想表达「当地某点几分的太阳」都走这个函数。
+  def self.local_time(y, mo, d, hh, mm = 0)
+    t = Time.new(y, mo, d, hh, mm, 0)
+    t + t.utc_offset
   end
 
   def self.vec(x, y, z)
@@ -119,16 +178,47 @@ module SURender
   end
 
   def self.setup_render(time: nil)
-    rset('DisplayFog', false)          # 白雾会洗白画面
     rset('RenderMode', 2)              # 2 = 着色贴图（Textured）
     rset('EdgeDisplayMode', 1)
     rset('DisplayColorByLayer', false)
-    rset('BackgroundColor', Sketchup::Color.new(247, 246, 244))
+
+    # 背景：默认暖白；黄昏图传 bg 覆盖。天空与渐变要显式关掉，
+    # 否则天空色会盖过 BackgroundColor，画面被洗成一片灰蓝（实测踩过）。
+    if bg
+      rset('BackgroundColor', Sketchup::Color.new((bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF))
+    else
+      rset('BackgroundColor', Sketchup::Color.new(247, 246, 244))
+    end
+    rset('DisplaySky', sky)            unless sky.nil?
+    rset('DisplayGradient', gradient)  unless gradient.nil?
+
+    # ★ SketchUp 的「无限地面」一定要关。它是一块按世界 z=0 无限延伸的板，
+    #   颜色与设计无关（浅沙色），一出图就是「模型摆在桌上」的既视感，
+    #   而且把设计场地里低于 z=0 的部分整个托起来盖住。
+    #   正确做法：关掉它，自己铺一块够大的环境地面（见 plan_data.CONTEXT）。
+    rset('DisplayGround', false)
+
+    # ★ 雾：出图去「地平线硬边」的关键。自己铺的环境地面再大也有尽头，
+    #   它的远端边缘会在画面上切出一条硬线，露出背景色（实测很扎眼）。
+    #   把雾色设成与天空近地色一致，远处地面就自然融进天空里。
+    #   雾起距离要大于「相机到主体」的距离，否则主体也会被雾洗白。
+    if fog
+      rset('DisplayFog', true)
+      rset('FogColor', Sketchup::Color.new((fog >> 16) & 0xFF, (fog >> 8) & 0xFF, fog & 0xFF))
+      rset('FogStartDist', (fog0 || 150).m)
+      rset('FogEndDist', (fog1 || 800).m)
+    else
+      rset('DisplayFog', false)        # 白雾会洗白画面
+    end
+
     shset('DisplayShadows', true)
     shset('UseSunForAllShading', true)
-    shset('ShadowTime', time) if time
-    shset('Light', 60)
-    shset('Dark', 45)
+    t = time || sun
+    shset('ShadowTime', t) if t
+    # 阴影面板的两根滑杆：决定「受光面亮度」与「背光面暗度」，
+    # 是 SketchUp 出黄昏图唯一能拉开明暗对比的旋钮（默认偏平）。
+    shset('Light', (light || 70))
+    shset('Dark',  (dark  || 25))
     shset('DisplayNorth', false)
     style.each { |k, v| rset(k, v) }
     true

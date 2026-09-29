@@ -199,7 +199,8 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 
 ## 3. 全局踩坑索引
 
-按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 37 条）。
+按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 48 条）。
+**第 1、2 条与第 38—43 条是高频重灾区**，动手前先扫一遍。
 
 | # | 坑 | 一句话解法 |
 |---|---|---|
@@ -225,6 +226,17 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 | 20 | **材质赋在「组」上不在「面」上** | 审计材质**必须走组级**；读 `Face#material` 全是 `nil`，会得出「材质一个都没用上」的假警报 |
 | 21 | **`su_client.ruby()` 吞异常** | Ruby 报错时返回 `None`，错误信息丢失；排查期用 `tool()` 打印完整返回才能看到原因 |
 | 22 | **多行 Ruby 别用命令行 `-c` 传** | bash→Python→Ruby 四层转义会把代码弄坏；写成 `.rb` 文件再读入执行 |
+| 38 | ★★ **建模必须 Z 轴向上** | 用 Y 轴向上建模时，SketchUp 的太阳相对模型仰角变成 `asin(SunDirection.y)`——实测 **−29.7°，太阳在地平线以下**，画面全平、无影、无暖调，怎么调 ShadowTime 都救不回来。同时模型相对世界旋转 90°，原生工具全错位。映射固定为 `SU_X=图纸X / SU_Y=图纸Y / SU_Z=高度`，并同步改 `north_angle`（90→0）与 views.json 的 `up`（[0,1,0]→[0,0,1]）。验算：`python su_env.py` 打出的太阳高度角必须为正，黄昏图在 8°—20° |
+| 39 | ★ **ShadowTime 用 UTC 墙钟** | 直接填当地 17:05 得到的是**上午 9 点**的太阳（高度角 34° 而非 13°）。必须补本机 UTC 偏移：`t + t.utc_offset`（或 `SURender.local_time(...)`、views.json 的 `"sun_local": true`）。用 `su_sun_scan.py` 扫全天即可看出偏移量 |
+| 40 | **`shadow_info['City']` 覆盖经纬度** | 写 City 会触发城市库查询并覆盖刚写入的 Lat/Lon（实测被改回模板默认的北京 39.93/116.39）。顺序必须是 City → 经纬度 → NorthAngle |
+| 41 | **SketchUp 无限地面渲成沙色板** | `DisplayGround` 默认开着，按 z=0 无限延伸，是「模型摆在一张桌上」的元凶。关掉它，另在真源里铺一块够大的环境地面 |
+| 42 | **地平线硬边** | 环境地面再大也有尽头。用雾化掉，且雾色要与天空近地色一致；`FogStartDist` 必须大于相机到主体的距离，否则主体被洗白 |
+| 43 | **素模出不来黄昏暖调** | SketchUp 对太阳**色温**响应很弱，实测 17:05/17:20/17:32 三档几乎无差别（`su_render.py sun_test.py` 可复现）。真正的杠杆是：① 材质基色偏暖（冷白混凝土 → 暖白）；② `Light`/`Dark` 滑杆拉对比；③ 后期 `grade_render.py` 轻调色 |
+| 44 | **尺寸界线飞出几十米** | `add_linear_dim` 的 `p1/p2` 是**被测点**，写成图纸原点会让界线横跨全图，看着像画错一堆矩形。测量点要贴被测边、基点就近放 |
+| 45 | **DXF 中文图层名变 `\U+56fe`** | R2000 及更早按 code page 写盘会转义非 ASCII。改用 `ezdxf.new("R2010")`；导出预览 PNG 要显式指定白底 |
+| 46 | **球心 `k·r` 未两头验算** | 展品球心写 `0.42r` 导致半径 3200 的球沉到楼板下 1856 mm（审计表现为「建筑总高 25856 ≠ 24000」）。球底 `(k−1)r`、球顶 `(k+1)r` 都要验 |
+| 47 | **审计按想当然的组名写前缀** | 本次三条假故障：针叶树种被命名成「乔木N」、栏杆组叫「露台栏杆_南」、人物组叫「人1」。判据要照生成器**实际写出的名字**写 |
+| 48 | **审计脚本 import 到同名模块** | 项目与技能目录都有 `plan_data.py`；技能目录要 `sys.path.append` 而不是 `insert(0)`，否则拿到技能自带那份，`AttributeError` |
 
 ---
 
@@ -257,9 +269,14 @@ image-to-3d-design-pipeline/
 │   ├── make_skp_rb.py           真源 → SketchUp 建模脚本（带结构自检）
 │   ├── verify_consistency.py    四层一致性校验
 │   ├── su_kit.rb                SketchUp 建模工具箱（项目无关）
+│   ├── su_landscape.rb          SketchUp 景观工具箱（乔木/灌木/水体/台阶/栏杆/人物）
 │   ├── su_render.rb             SketchUp 出图工具箱（项目无关）
 │   ├── su_pipeline.py           分步编排器（★ 解决长请求假死）
 │   ├── su_client.py             su_mcp 直连客户端
+│   ├── su_env.py                读回阴影/坐标状态并核算太阳真实仰角（★ 查「渲染全平」）
+│   ├── su_sun_scan.py           扫描全天太阳位置，反推 SketchUp 的 ShadowTime 时区偏移
+│   ├── sun_test.py              同视角多组光照参数快速对比出图（氛围迭代用）
+│   ├── grade_render.py          素模渲染后期轻调色（暖偏移 + 对比 + 暗角）
 │   ├── activate_window.py       把 SketchUp 窗口置前（后台渲染慢时用）
 │   ├── post_render.py           效果图后处理（裁水印 + 规范命名）
 │   ├── embed_images.py          占位符 → base64 内嵌 HTML

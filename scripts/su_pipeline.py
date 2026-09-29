@@ -100,19 +100,32 @@ def read_json(path):
 # --------------------------------------------------------------------------- #
 def cmd_probe(_args):
     t = time.time()
-    r = step("probe", "'1+1'", timeout=15, quiet=True)
+    # ★ 探活表达式必须写 1+1，不能写 '1+1'。
+    #   Ruby 里 '1+1' 是**字符串字面量**，求值结果是 "1+1" 而不是 "2"，
+    #   于是判据 r == "2" 永远不成立 → probe 每次都报「主线程无响应」的假故障。
+    #   这个假警报会让人误以为主线程卡住而白白重启 SketchUp（实测踩过）。
+    r = step("probe", "1+1", timeout=15, quiet=True)
     ok = r == "2"
     print(f"{'[OK]' if ok else '[X]'} 主线程{'空闲，可继续' if ok else '无响应/异常'}  ({time.time()-t:.1f}s)")
     if not ok:
+        print(f"     probe 返回：{r!r}（期望 '2'）")
         print("     检查：SketchUp 是否在运行、su_mcp 插件是否已 start_server（端口 9876 LISTENING）")
     return 0 if ok else 1
 
 
 def cmd_load(_args):
-    ok = step("load su_kit.rb", f"load '{KIT}'; 'kit ok'") is not None
-    if ok:
-        step("load su_render.rb", f"load '{RENDER}'; 'render ok'")
-    return 0 if ok else 1
+    # 自动加载 scripts/ 下所有 su_*.rb 工具箱，新增工具箱无需改这里。
+    # ★ 逐个文件单独发请求：打包成一个长请求会触发假死（见 pitfalls 第 1 条）。
+    import glob as _glob
+    files = sorted(_glob.glob(os.path.join(HERE, "su_*.rb")))
+    if not files:
+        print("[X] scripts/ 下没有 su_*.rb 工具箱")
+        return 1
+    ok_all = True
+    for f in files:
+        p = f.replace("\\", "/")
+        ok_all = step(f"load {os.path.basename(f)}", f"load '{p}'; 'ok'") is not None and ok_all
+    return 0 if ok_all else 1
 
 
 def cmd_run(args):
@@ -144,12 +157,56 @@ def cmd_prep(args):
     views_rb = json.dumps(cfg["views"], ensure_ascii=False)
     cx = cfg.get("cx", 0.0)
     cz = cfg.get("cz", 0.0)
+
+    # 氛围设置（黄昏图必用）：背景色 / 天空 / 渐变 / 太阳时刻
+    #   "bg": 0xRRGGBB（十进制写也行）、"sky": true/false、"gradient": true/false、
+    #   "sun": [2026, 9, 29, 17, 5]   → 低太阳高度角 → 长影 + 暖光
+    #   "sun_local": true（默认）      → 对上面的时刻做 UTC 墙钟修正，见下
+    extra = []
+    if "bg" in cfg:
+        extra.append(f"bg: {int(cfg['bg'])}")
+    for k in ("sky", "gradient"):
+        if k in cfg:
+            extra.append(f"{k}: {str(bool(cfg[k])).lower()}")
+    # 阴影面板「亮 / 暗」滑杆：拉开明暗对比（默认 70 / 25）
+    for k in ("light", "dark"):
+        if k in cfg:
+            extra.append(f"{k}: {int(cfg[k])}")
+    # 雾：去地平线硬边（fog_color 给 0xRRGGBB；fog_start / fog_end 单位米）
+    if "fog_color" in cfg:
+        extra.append(f"fog_color: {int(cfg['fog_color'])}")
+    for k in ("fog_start", "fog_end"):
+        if k in cfg:
+            extra.append(f"{k}: {float(cfg[k])}")
+    if "sun" in cfg:
+        y, mo, d, hh, mm = (list(cfg["sun"]) + [0, 0])[:5]
+        if cfg.get("sun_local", True):
+            # ★ ShadowTime 时区陷阱（实测）：SketchUp 把 Time 的 **UTC 墙钟**
+            #   当作场地当地时刻。直接填当地时刻会得到「8 小时前」的太阳 ——
+            #   填 17:05 实际算出上午 09:05（高度角 34°、方位角 118°），
+            #   完全不是黄昏。补上本机 UTC 偏移后才是 13.3° / 259°。
+            #   关掉这个修正请设 "sun_local": false。
+            extra.append(
+                f"sun: (lambda {{ |t| t + t.utc_offset }}).call("
+                f"Time.new({int(y)}, {int(mo)}, {int(d)}, {int(hh)}, {int(mm)}, 0))")
+        else:
+            extra.append(
+                f"sun: Time.new({int(y)}, {int(mo)}, {int(d)}, {int(hh)}, {int(mm)}, 0)")
+    if "style" in cfg:
+        extra.append(f"style: {json.dumps(cfg['style'], ensure_ascii=False)}")
+    extra_s = (", " + ", ".join(extra)) if extra else ""
+
     code = (
         f"require 'json'; load '{RENDER}'; "
         f"SURender.configure(views: JSON.parse('{views_rb}'), out_dir: '{out}', "
-        f"cx: {cx}, cz: {cz}); "
-        "SURender.prep(time: (Time.new(2026,9,29,10,30,0) rescue nil))"
+        f"cx: {cx}, cz: {cz}{extra_s}); "
+        "SURender.prep()"
     )
+    extra_keys = [k for k in ("bg", "sky", "gradient", "sun", "sun_local",
+                              "light", "dark", "fog_color", "fog_start",
+                              "fog_end", "style") if k in cfg]
+    if extra_keys:
+        print(f"    氛围：{', '.join(extra_keys)}")
     return 0 if step("prep", code, timeout=180) is not None else 1
 
 

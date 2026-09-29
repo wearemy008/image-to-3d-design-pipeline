@@ -8,12 +8,19 @@
 #   SUKit.box(model.entities, '名称', '图层', '材质', x0, y0, x1, y1, h0, h1)
 #
 # 坐标系约定（★ 最容易错的一点）：
-#   SketchUp 是 **Y 轴向上**。
-#   设图纸平面坐标为 (X, Y)、高度为 H，则映射为：
+#   SketchUp 世界坐标 **Z 轴向上**。设图纸平面坐标为 (X, Y)、高度为 H：
 #       SketchUp X = 图纸 X
-#       SketchUp Y = 高度 H
-#       SketchUp Z = 图纸 Y        ← 注意这里是 Z 承载图纸的 Y
+#       SketchUp Y = 图纸 Y
+#       SketchUp Z = 高度 H
 #   所有平面坐标参数沿用图纸读数（mm），无需在调用处换算。
+#
+#   ⚠️ 历史坑（务必不要退回）：早期版本曾用「Y 轴向上」建楼
+#      （SU_Y = 高度 H、SU_Z = 图纸 Y）。几何外形看着没错，但会同时坏两件事：
+#        1) 模型相对 SketchUp 世界整体旋转 90°——俯视图、视高、量距全部错位；
+#        2) SketchUp 的太阳/阴影系统以世界 Z 为天顶，Y 轴向上的模型于是「躺着」，
+#           太阳的相对仰角被算成 asin(sun_dir.y)（实测 −29.7°，即太阳在地平线以下），
+#           表现为渲染全平、无阴影、无黄昏暖调，且怎么调 ShadowTime 都救不回来。
+#      结论：高度一律走 Z。
 #
 # 单位：本工具箱所有入参单位为**毫米**，内部自动 .mm。读取返回值时必须 .to_m，
 #       因为 SketchUp 内部一律以英寸存储。
@@ -46,12 +53,59 @@ module SUKit
   # ⚠️ 副作用：clear! 之后 definitions.purge_unused 会**静默删掉所有未被引用的材质**。
   #    因此「声明了 N 种材质」≠「模型里有 N 种」，交付前必须做材质审计
   #    （见 verify_consistency.py）。
+  # ⚠️ 图层也要一并清：只清实体不清图层的话，改了 LAYERS 重跑会**残留上一版的空图层**
+  #    （实测：从真源里删掉 "0" 之后模型里仍有 "0"，审计报「图层 15 ≠ 14」）。
+  #    默认标记（Layer0 / 0）不可删，跳过。
+  # ⚠️ SketchUp 2025 已移除 `Layers#current`（改成 `Model#active_layer`）。
+  #    写成 `m.layers.current` 会 NoMethodError；若这句在 begin/rescue 之外，
+  #    异常会被**最外层**的 rescue 吞掉，整段清图层静默失效 —— 实测踩过。
   def self.clear
-    Sketchup.active_model.entities.clear!
-    Sketchup.active_model.definitions.purge_unused
+    m = Sketchup.active_model
+    m.entities.clear!
+    m.definitions.purge_unused
+    cur = (m.respond_to?(:active_layer) ? m.active_layer : nil)
+    dflt = m.layers[0]
+    m.layers.to_a.each do |l|
+      next if l == dflt || %w[Layer0 Untagged].include?(l.name.to_s)
+      next if cur && cur == l
+      begin
+        m.layers.remove(l, false)
+      rescue StandardError
+        nil
+      end
+    end
     true
   rescue StandardError
     true
+  end
+
+  # ------------------------------------------------------------ 清空图层 ----
+  # 只用一次「模型已在别处建好、只想删掉空图层」的场合（不想重建模型时）。
+  # 只删**没有任何实体在用**的图层，在用图层原样保留，所以不会丢几何。
+  def self.prune_unused_layers
+    m = Sketchup.active_model
+    used = Hash.new(0)
+    walk = nil
+    walk = lambda do |es|
+      es.each do |e|
+        used[e.layer.name] += 1 if e.respond_to?(:layer) && e.layer
+        walk.call(e.entities) if e.respond_to?(:entities)
+      end
+    end
+    walk.call(m.entities)
+    n = 0
+    dflt = m.layers[0]
+    m.layers.to_a.each do |l|
+      next if l == dflt || %w[Layer0 Untagged].include?(l.name.to_s)
+      next if used[l.name] > 0
+      begin
+        m.layers.remove(l, false)
+        n += 1
+      rescue StandardError
+        nil
+      end
+    end
+    n
   end
 
   # ------------------------------------------------------------ 唯一图元 box ---
@@ -60,22 +114,22 @@ module SUKit
   #
   # 两个必须保留的防御：
   #   1) 非法区间直接返回 nil —— 镜像户型时 x1 会小于 x0，不拦住会生成一堆废面；
-  #   2) f.normal.y < 0 时 reverse! —— 否则 pushpull 朝下长，构件跑到地面以下。
+  #   2) f.normal.z < 0 时 reverse! —— 否则 pushpull 朝下长，构件跑到地面以下。
   def self.box(parent, name, layer, mat, px0, py0, px1, py1, h0, h1)
     return nil if px1 <= px0 || py1 <= py0 || h1 <= h0
     g = parent.entities.add_group
     pts = [
-      Geom::Point3d.new(px0.mm, h0.mm, py0.mm),
-      Geom::Point3d.new(px1.mm, h0.mm, py0.mm),
-      Geom::Point3d.new(px1.mm, h0.mm, py1.mm),
-      Geom::Point3d.new(px0.mm, h0.mm, py1.mm),
+      Geom::Point3d.new(px0.mm, py0.mm, h0.mm),
+      Geom::Point3d.new(px1.mm, py0.mm, h0.mm),
+      Geom::Point3d.new(px1.mm, py1.mm, h0.mm),
+      Geom::Point3d.new(px0.mm, py1.mm, h0.mm),
     ]
     f = g.entities.add_face(pts)
     unless f
       g.erase!
       return nil
     end
-    f.reverse! if f.normal.y < 0
+    f.reverse! if f.normal.z < 0
     f.pushpull((h1 - h0).mm)
     g.name = name
     g.layer = layer if layer
@@ -220,7 +274,7 @@ module SUKit
     defn = std_group.entities.parent
     (1...n).each do |i|
       inst = Sketchup.active_model.entities.add_instance(
-        defn, Geom::Transformation.new([0, (floor_h * i).mm, 0]))
+        defn, Geom::Transformation.new([0, 0, (floor_h * i).mm]))
       inst.name = "#{name_prefix}_#{i + 1}F"
       inst.layer = layer
     end
