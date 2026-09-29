@@ -563,3 +563,56 @@ Frontend(ctx, MatplotlibBackend(ax), config=cfg).draw_layout(...)
 sys.path.insert(0, HERE)      # 项目自己的真源优先
 sys.path.append(SKILL)        # 技能脚本（su_client 等）放后面
 ```
+
+### 49. SketchUp 2025 已移除 `Layers#current`（清图层会整段静默失效）
+
+```ruby
+m.layers.to_a.each do |l|
+  next if m.layers.current == l      # ← NoMethodError
+  m.layers.remove(l, false)
+end
+```
+
+SU 2025 移除了 `Layers#current`（改用 `Model#active_layer`），`Layers#remove` 还在。
+最坑的是：这句若写在 `begin/rescue` **之外**，异常会被外层的 `rescue StandardError` 吞掉，
+**整段清图层逻辑静默失效** —— 表面看一切正常，实际一个图层都没删
+（实测：真源里删掉 "0" 之后模型里仍有 "0"，审计报「图层 15 ≠ 14」，查了半天才发现）。
+
+安全写法：
+
+```ruby
+def self.clear
+  m = Sketchup.active_model
+  m.entities.clear!
+  m.definitions.purge_unused
+  cur = (m.respond_to?(:active_layer) ? m.active_layer : nil)
+  dflt = m.layers[0]                       # 默认标记恒在 index 0
+  m.layers.to_a.each do |l|
+    next if l == dflt || %w[Layer0 Untagged].include?(l.name.to_s)
+    begin
+      m.layers.remove(l, false)            # ★ 只这句在 rescue 里
+    rescue StandardError
+      nil
+    end
+  end
+  true
+rescue StandardError
+  true
+end
+```
+
+另给 `su_kit.rb` 加了 `prune_unused_layers`：遍历实体统计各图层引用数，只删**零引用**图层，
+不重建模型也能清掉历史残留（在用图层原样保留，不会丢几何）。
+
+### 50. 调色脚本「备份 + 原地覆盖」会静默丢图
+
+「读成品图 → 备份到 _raw → 原地覆盖成品图」看着聪明，第二次出图时成品图已被覆盖成新图，
+脚本却因为 `_raw` 里已有同名备份而**继续用旧备份当源** ——
+**新一轮渲染结果被静默丢弃**。实测：连续三次重建重渲，成品图始终是第一版的内容。
+
+改成两目录、永远单向：
+
+    <出图目录>/_raw/   ← SketchUp 直出（views.json 的 "out" 指向这里）
+    <出图目录>/         ← 调色成品（grade_render.py 从 _raw 读、写回这里）
+
+这样重跑多少次都幂等。

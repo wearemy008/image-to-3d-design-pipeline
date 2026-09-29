@@ -199,7 +199,7 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 
 ## 3. 全局踩坑索引
 
-按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 48 条）。
+按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 50 条）。
 **第 1、2 条与第 38—43 条是高频重灾区**，动手前先扫一遍。
 
 | # | 坑 | 一句话解法 |
@@ -237,6 +237,8 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 | 46 | **球心 `k·r` 未两头验算** | 展品球心写 `0.42r` 导致半径 3200 的球沉到楼板下 1856 mm（审计表现为「建筑总高 25856 ≠ 24000」）。球底 `(k−1)r`、球顶 `(k+1)r` 都要验 |
 | 47 | **审计按想当然的组名写前缀** | 本次三条假故障：针叶树种被命名成「乔木N」、栏杆组叫「露台栏杆_南」、人物组叫「人1」。判据要照生成器**实际写出的名字**写 |
 | 48 | **审计脚本 import 到同名模块** | 项目与技能目录都有 `plan_data.py`；技能目录要 `sys.path.append` 而不是 `insert(0)`，否则拿到技能自带那份，`AttributeError` |
+| 49 | **SU 2025 移除 `Layers#current`** | 写它会在 begin/rescue 之外抛 NoMethodError，被最外层 rescue 吞掉 → 清图层整段静默失效。用 `Model#active_layer`；另 `su_kit.prune_unused_layers` 只删零引用图层 |
+| 50 | **调色脚本「备份+原地覆盖」丢图** | 第二次出图时因备份已存在而继续用旧备份当源，新一轮渲染被静默丢弃。改成 `_raw/`（原图）与成品目录分离 |
 
 ---
 
