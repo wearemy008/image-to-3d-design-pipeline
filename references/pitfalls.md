@@ -263,12 +263,27 @@ end
 更稳的做法：**Ruby 片段用普通字符串 + 占位符替换**（`tmpl.replace("@NAME@", ...)`），
 完全避开花括号转义问题。
 
-### 31. venv python 的绝对路径调用
+### 31. 依赖装错解释器 → `make_dxf.py` 直接退出
 
-venv 的 `python.exe` 位于 `envs/default/Scripts/` 下，
-**以绝对路径调用会报 `No such file or directory`（退出码 127）**。
-必须先 `cd` 到 Scripts 目录再 `./python.exe` 调用。
+`make_dxf.py` 找不到 `ezdxf` 会打印 `[X] 缺少 ezdxf：pip install ezdxf` 并退出，
+**不会静默降级**。用托管运行时的时候特别容易踩：默认 python 是干净的，
+依赖其实装在另一个 venv 里。
+
+排查：逐个解释器试 `python -c "import ezdxf; print(ezdxf.__version__)"`，
+找到装了依赖的那个，后续命令全部用它的**全路径**调用。
+
+另注：venv 的 `python.exe` 在 `envs/<name>/Scripts/` 下，本机**用绝对路径调用是正常的**；
+若真遇到 `No such file or directory`（退出码 127），先怀疑路径本身写错
+（Git Bash 的路径转换、盘符大小写、目录里有空格），而不是「venv 不能绝对路径调用」。
 
 ### 32. 命令里的 `$` 变量要转义
 
 命令串含 `$INSUNITS` 这类会被 bash 展开成空串。用 `\$` 转义或整体用单引号。
+
+### 33. 公开仓库前要清掉机器专属路径
+
+技能目录里出现的 `C:/Users/<你的用户名>/...`、内网绝对路径等，公开前要改成
+`<skill-dir>` 之类的占位符。注意**文档里的示例路径**（`D:/proj/plan.dxf`）是无害的，
+真正要清的是指向**真实存在的本机目录**的那种。
+`.gitignore` 里也要把 `*.dxf / *.dwg / *.skp / __pycache__` 排除掉，
+避免把几百 MB 的运行产物推上去。

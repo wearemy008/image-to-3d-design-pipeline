@@ -44,6 +44,21 @@ agent_created: true
 
 ---
 
+## 0.5 环境准备（一次性）
+
+```bash
+python -m pip install ezdxf matplotlib Pillow      # ezdxf 必需，后两个是预览与后处理
+```
+
+**依赖装在哪个解释器上很关键**：`make_dxf.py` 找不到 `ezdxf` 会直接 `[X] 缺少 ezdxf`
+退出（不会静默降级）。若用托管运行时，建议建独立 venv 并把依赖装进去，
+后续所有命令都用该 venv 的 python 全路径调用；**不要把包装到全局环境**。
+
+SketchUp 侧另需装 **su_mcp** 插件并让它监听 `127.0.0.1:9876`，
+`su_pipeline.py probe` 能 0.1 秒返回才算通了（详见 `sketchup-mcp-automation` 技能）。
+
+---
+
 ## 1. 核心机制：单一几何真源
 
 **这是本技能存在的理由。** 五个阶段里最容易出的不是「算错」，而是**同一个数字在三处对不上**：
@@ -180,7 +195,7 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 
 ## 3. 全局踩坑索引
 
-按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`。
+按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 33 条）。
 
 | # | 坑 | 一句话解法 |
 |---|---|---|
@@ -202,6 +217,7 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 | 16 | **matplotlib 中文变方块** | 预览图要显式指定 `Microsoft YaHei`/`SimHei` |
 | 17 | **DIMENSION 在预览里不显示** | 是块引用，要用 `virtual_entities()` 展开 |
 | 18 | **居中文字读不到 insert** | `set_placement(align=…)` 后位置在 `align_point`，读 `insert` 会拿到原点 |
+| 19 | **依赖装错解释器** | `make_dxf.py` 找不到 `ezdxf` 会直接退出不降级；逐个解释器试 `import ezdxf` 找到装了依赖的那个 |
 
 ---
 
