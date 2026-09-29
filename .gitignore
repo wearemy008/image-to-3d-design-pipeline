@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 运行产物（真源与脚本入库，生成物不入库）
+/examples/out/
+/_qa/
+*.dxf
+*.dwg
+*.skp
+*.skb
+*_preview.png
+渲染/
