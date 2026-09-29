@@ -25,6 +25,35 @@
    ```
    探活不通就不要重试，等上一批跑完；必要时重启 SketchUp
 
+**诊断利器：让 su_mcp 自己记下请求时间线。**
+su_mcp 插件把**每一次连接、每一次 `execute_ruby`（含代码字符数）、每一次报错**都打到
+SketchUp 进程的 **stdout**。所以只要启动时重定向输出，就得到一份完整的请求流水：
+
+```bash
+cd "/c/Program Files/SketchUp/SketchUp 2025/SketchUp" \
+  && ./SketchUp.exe "C:\path\to\template.skp" > "/tmp/su_mcp.log" 2>&1 &
+```
+
+日志长这样（时间戳 + 代码长度就是「哪个请求慢」的直接证据）：
+
+```
+13:16:12 INFO [SU-MCP][TcpServer] TCP Server started on 127.0.0.1:9876
+13:57:36 INFO [SU-MCP][ExecuteRuby] Executing Ruby code: 26 chars      ← 逐视角出图
+13:57:36 INFO [SU-MCP][Session] Session session_2060 disconnected: EOFError
+```
+
+**怎么读**：
+- 相邻两条 `ExecuteRuby` 的时间差 = 该请求实际耗时。差几百毫秒是正常的；
+  某条之后**长时间没有下一条**，那条就是卡住的那个
+- `Session ... disconnected: Errno::ECONNRESET` = 客户端被强杀（就是上面说的连锁反应）
+- 出现 `already initialized constant Xxx::YYY` 是**无害噪声** —— 反复 `load` 同一个
+  `.rb` 时 Ruby 必然警告常量重定义；用 `load` 而非 `require` 才有此现象，
+  功能不受影响，不必处理
+- `(eval):1: warning: Deprecated overload, use with_status: true overload instead`
+  也是无害的 API 弃用提示
+- 海量 `unknown: Not a TIFF or MDI file, bad magic number` 与 `WGLUtils::...`
+  是 SketchUp 自身的日志噪声，与 su_mcp 无关，忽略
+
 ### 2. `View#write_image` 不接受关键字哈希
 
 ```ruby

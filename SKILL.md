@@ -199,7 +199,7 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 
 | # | 坑 | 一句话解法 |
 |---|---|---|
-| 1 | **su_mcp 长请求假死** | 绝不把「建相机 + N 次 write_image + sleep」打包成一个请求；逐视角发独立请求（各 1—2s）。被强杀的请求会继续占主线程，让后续全部排队 → 先 `su_pipeline.py probe` 探活再重试 |
+| 1 | **su_mcp 长请求假死** | 绝不把「建相机 + N 次 write_image + sleep」打包成一个请求；逐视角发独立请求（各 1—2s）。被强杀的请求会继续占主线程，让后续全部排队 → 先 `su_pipeline.py probe` 探活再重试。想定位到底是哪条卡住：启动 SketchUp 时把 stdout 重定向到文件，插件会逐条打出 `ExecuteRuby: N chars` 的时间线 |
 | 2 | **`write_image` 不吃关键字哈希** | 必须位置参数 `write_image(path, w, h, antialias, compression)` |
 | 3 | **材质被静默清除** | 交付前做材质审计；材质数对不上就是有构件漏赋材质 |
 | 4 | **漏窗框** | 只放一块玻璃板 = 悬浮玻璃；要「上下框 + 左右竖挺 + 玻璃内嵌」四件套 |
