@@ -39,13 +39,16 @@ cd "/c/Program Files/SketchUp/SketchUp 2025/SketchUp" \
 ```
 13:16:12 INFO [SU-MCP][TcpServer] TCP Server started on 127.0.0.1:9876
 13:57:36 INFO [SU-MCP][ExecuteRuby] Executing Ruby code: 26 chars      ← 逐视角出图
-13:57:36 INFO [SU-MCP][Session] Session session_2060 disconnected: EOFError
+13:57:36 INFO [SU-MCP][Session] Session session_2060 disconnected: EOFError   ← 正常收尾
 ```
 
 **怎么读**：
 - 相邻两条 `ExecuteRuby` 的时间差 = 该请求实际耗时。差几百毫秒是正常的；
   某条之后**长时间没有下一条**，那条就是卡住的那个
-- `Session ... disconnected: Errno::ECONNRESET` = 客户端被强杀（就是上面说的连锁反应）
+- `Session ... disconnected: EOFError` = **正常断开**（客户端跑完自己关了连接），
+  一次成功的查询就是这样收尾的，**不是故障**
+- `Session ... disconnected: Errno::ECONNRESET` = **异常断开**，客户端被强杀
+  （就是上面说的连锁反应）。只有这一种才要警惕
 - 出现 `already initialized constant Xxx::YYY` 是**无害噪声** —— 反复 `load` 同一个
   `.rb` 时 Ruby 必然警告常量重定义；用 `load` 而非 `require` 才有此现象，
   功能不受影响，不必处理
@@ -53,6 +56,10 @@ cd "/c/Program Files/SketchUp/SketchUp 2025/SketchUp" \
   也是无害的 API 弃用提示
 - 海量 `unknown: Not a TIFF or MDI file, bad magic number` 与 `WGLUtils::...`
   是 SketchUp 自身的日志噪声，与 su_mcp 无关，忽略
+
+> 另注：日志是**块缓冲**的，重定向到文件后不会逐行实时出现，
+> 会攒一批才刷一次。别因为「日志没动静」就以为插件没起来 —— 用
+> `netstat` 看 9876 是否 LISTENING 更可靠。
 
 ### 2. `View#write_image` 不接受关键字哈希
 
