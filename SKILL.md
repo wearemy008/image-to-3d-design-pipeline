@@ -191,11 +191,15 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 实测事故：脚本声明 20 种材质，模型里只剩 16 种 —— 差的 4 种（窗框、次墙面、磨砂玻璃、
 黄铜五金）根本没落到几何上，且不报任何错。用 `su_pipeline.py materials` 抓出来。
 
+**审计要按「组」数，不是按「面」数**：`SUKit.box` 把材质赋在**组**上
+（`g.material = mat`），所以遍历面读 `Face#material` 会全是 `nil`，
+得出「声明 20 种 / 引用 0 种」的假警报。看到这个数字先怀疑自己读错层级。
+
 ---
 
 ## 3. 全局踩坑索引
 
-按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 33 条）。
+按「会浪费你多少时间」排序，完整版见 `references/pitfalls.md`（共 37 条）。
 
 | # | 坑 | 一句话解法 |
 |---|---|---|
@@ -218,6 +222,9 @@ python verify_consistency.py --dxf D:/proj/plan.dxf --report D:/proj/方案.html
 | 17 | **DIMENSION 在预览里不显示** | 是块引用，要用 `virtual_entities()` 展开 |
 | 18 | **居中文字读不到 insert** | `set_placement(align=…)` 后位置在 `align_point`，读 `insert` 会拿到原点 |
 | 19 | **依赖装错解释器** | `make_dxf.py` 找不到 `ezdxf` 会直接退出不降级；逐个解释器试 `import ezdxf` 找到装了依赖的那个 |
+| 20 | **材质赋在「组」上不在「面」上** | 审计材质**必须走组级**；读 `Face#material` 全是 `nil`，会得出「材质一个都没用上」的假警报 |
+| 21 | **`su_client.ruby()` 吞异常** | Ruby 报错时返回 `None`，错误信息丢失；排查期用 `tool()` 打印完整返回才能看到原因 |
+| 22 | **多行 Ruby 别用命令行 `-c` 传** | bash→Python→Ruby 四层转义会把代码弄坏；写成 `.rb` 文件再读入执行 |
 
 ---
 

@@ -42,6 +42,11 @@ SketchUp Z = 图纸 Y
 唯一图元：矩形底面 + pushpull 成正交六面体。
 - 非法区间（`px1<=px0` 等）返回 `nil`，不报错
 - `f.normal.y < 0` 时自动 `reverse!`，保证向上长
+- **★ 材质赋在「组」上（`g.material = mat`），不在面上**
+
+**由此推出一条硬规矩**：审计材质用量时**必须走组级**，
+遍历面读 `Face#material` 会全部得到 `nil`，得出「材质一个都没用上」的假警报。
+详见 `pitfalls.md` 第 34 条。
 
 ### `SUKit.split(a0, a1, holes)` → `[[s,e], ...]`
 在 [a0, a1] 上挖去洞口，返回剩余实墙段。**与 DXF 端 `segs()` 算法一致**。

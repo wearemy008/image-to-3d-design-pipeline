@@ -63,6 +63,32 @@
 - [ ] 场景（页面）已生成，可在 SketchUp 内一键切换
 - [ ] ★ `.skp` 已保存，且 `path` 指向**目标目录**（不是 `~/Documents`）
 - [ ] 人工过一遍轴测图：窗框在、入口门在、格栅是细分竖条不是整块板
+- [ ] ★ **重新打开 `.skp` 回读一次**（最有力的验证：关掉再开，跑一次下面的查询，
+      确认结构没在保存/重载中丢东西）：
+      - [ ] `path` 指向交付文件本身
+      - [ ] 外包尺寸与预期一致
+      - [ ] 场景数 = 预期（如 8），**场景名逐条正确**
+      - [ ] 图层数 = 预期
+      - [ ] 材质：声明数 = 实际引用数（按**组级**统计）
+      - [ ] 顶层实体 = 楼层组数 + 屋面 + 基座（如 6F → 8 个）
+      ```ruby
+      # 存成 query_model.rb，再 c.tool('execute_ruby', code=open(...).read())
+      m = Sketchup.active_model
+      cov = Hash.new(0)
+      w = lambda { |es| es.each { |e|
+        next unless e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)
+        cov[e.material.name] += 1 if e.material
+        w.call(e.entities) if e.respond_to?(:entities) } }
+      w.call(m.entities)
+      bb = m.bounds
+      [m.path.to_s,
+       ('%.2f x %.2f x %.2f' % [bb.width.to_m, bb.height.to_m, bb.depth.to_m]),
+       ('场景 %d: %s' % [m.pages.count, m.pages.map(&:name).join(' | ')]),
+       ('图层 %d / 材质 声明 %d 引用 %d' % [m.layers.count, m.materials.count, cov.size]),
+       ('顶层实体 %d' % m.entities.count)].join("\n")
+      ```
+- [ ] ★ `.skb` 自动备份**保留在交付目录**（SketchUp 保存时把上一版挪过去，
+      是 `.skp` 出问题时的救命稻草，别当垃圾删掉）
 
 ---
 

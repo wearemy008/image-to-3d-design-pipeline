@@ -316,3 +316,79 @@ end
 真正要清的是指向**真实存在的本机目录**的那种。
 `.gitignore` 里也要把 `*.dxf / *.dwg / *.skp / __pycache__` 排除掉，
 避免把几百 MB 的运行产物推上去。
+
+### 34. ★ 材质赋在「组」上，不在「面」上 —— 审计时读 `Face#material` 必得 nil
+
+`SUKit.box` 的做法是「一个构件 = 一个组，材质赋给组」：
+
+```ruby
+g = parent.entities.add_group
+# ... 画这个构件的面 ...
+g.material = mat if mat        # ← 材质在这里，不在面上
+```
+
+后果：**遍历面去读 `Face#material` 会全部得到 `nil`**，于是审计脚本报
+「声明 20 种材质 / 实际引用 0 种 / 20 种未被引用」——一个彻头彻尾的**假警报**，
+会让人以为模型要渲染成一片白，进而去改根本没坏的东西。（实测踩过。）
+
+正确姿势：**走组级**，与建模时赋值的层级对齐。
+
+```ruby
+cov = Hash.new(0)
+walk = lambda { |es|
+  es.each { |e|
+    next unless e.is_a?(Sketchup::Group) || e.is_a?(Sketchup::ComponentInstance)
+    cov[e.material.name] += 1 if e.material        # ★ 组级
+    walk.call(e.entities) if e.respond_to?(:entities)
+  }
+}
+walk.call(Sketchup.active_model.entities)
+```
+
+`su_pipeline.py materials` 里的 `AUDIT_RB` 就是这么写的，直接用它。
+**判断依据**：如果审计结果里出现「声明 N 种 / 引用 0 种」，先怀疑自己读错了层级，
+而不是模型坏了。
+
+### 35. `Sketchup::Material#count` 不存在
+
+想统计材质用量时容易顺手写 `m.materials.select { |x| x.count > 0 }`，
+报 `NoMethodError: undefined method 'count' for Sketchup::Material`。
+没有这个 API，只能自己遍历实体数引用次数（见第 34 条的 `cov` 写法）。
+
+### 36. `su_client.ruby()` 静默吞掉 Ruby 异常
+
+```python
+def ruby(self, code):
+    r = self.tool("execute_ruby", code=code)
+    if isinstance(r, dict) and r.get("success"):
+        return r.get("result")
+    return None            # ← 出错时也是 None，错误信息丢了
+```
+
+Ruby 抛异常时返回 `None`，**看不到任何错误原因**，只能看到一句 `None`，
+非常容易误判成「连不上」或「主线程卡住」而白白重启 SketchUp。
+
+排查期的正确写法：直接看完整的 `tool()` 返回。
+
+```python
+r = c.tool('execute_ruby', code=code)
+print(r.get('result') if r.get('success') else json.dumps(r, ensure_ascii=False))
+# → {"success":false,"error":"NoMethodError: undefined method `count' for ..."}
+```
+
+**注意区分**：`None` 有两种含义 —— 「Ruby 执行报错」与「请求超时」。想分清就先跑
+`c.ruby('1+1')`，能返回 `'2'` 说明通道正常，那 `None` 就是 Ruby 报错了。
+
+### 37. 用命令行 `-c` 传多行 Ruby 会被 shell 与 Python 双重转义吃掉
+
+把 Ruby 代码塞进 `python -c "..."` 然后 `'''...'''`，四层转义（bash → Python →
+Ruby 字符串）很容易把 `\n` 变成真换行、引号错位，最后 Ruby 收到的是语法坏掉的代码。
+**把 Ruby 写成 `.rb` 文件再读进来执行**，一次解决：
+
+```python
+code = open('query_model.rb', encoding='utf-8').read()
+r = c.tool('execute_ruby', code=code)
+```
+
+顺带一提：`.skb` 是 SketchUp 的**自动备份**（保存时把上一版挪过去）。
+若 `.skp` 出问题，`.skb` 就是上一版的救命稻草 —— 交付时**不要删它**。
