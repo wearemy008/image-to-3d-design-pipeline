@@ -352,12 +352,175 @@ def check_report(path):
 
 
 # --------------------------------------------------------------------------- #
+# E. 复原溯源审计（RECON）
+# --------------------------------------------------------------------------- #
+# 2026-09-29 新增。这一段专门抓一类**看起来完全正常**的错误：
+# 把「假定值」当「复原值」交付。
+#
+# 上一次实测：570×479 的 AIGC 效果图，所有尺寸凭经验假定，
+# 事后 fidelity_report.py 量出尺度误差 52.5%、色差 dE*76 = 34 ——
+# 而交付时没有任何一处报错。图纸、模型、方案三方完全自洽（其他四段全过），
+# 但整套尺寸是错的。这就是为什么需要单独一段来查「数字的出处」。
+
+LEVEL_DESC = {
+    "A": "实测（可作施工依据）",
+    "B": "参考（体量可信，绝对值需复核）",
+    "C": "量级（只有数量级对）",
+    "D": "假定（图上无从判断）",
+}
+
+# 用「会假定但没标」的典型键做抽查，覆盖建筑与室内两类
+PROBE_KEYS = [
+    ("GEOM.w", "总开间"),
+    ("GEOM.d", "总进深"),
+    ("GEOM.floor_h", "层高"),
+    ("GEOM.t_outer", "外墙厚"),
+    ("GEOM.sill", "窗台高"),
+    ("GEOM.head", "洞顶高"),
+]
+
+
+def _get(dotted):
+    """按 'A.b.c' 取嵌套值，取不到返回 (None, False)。"""
+    obj = P
+    for part in dotted.split("."):
+        if not isinstance(obj, dict) or part not in obj:
+            return None, False
+        obj = obj[part]
+    return obj, True
+
+
+def check_recon():
+    R = getattr(P, "RECON", None)
+
+    if not R:
+        warn("plan_data 未定义 RECON 段。若输入是带标注的施工图可忽略；"
+             "若输入是**无标注的透视图/AIGC 效果图**，缺 RECON 意味着所有尺寸的来源无处可查")
+        return
+
+    print("\n--- E. 复原溯源审计 ---")
+
+    # E1 溯源表存在且非空
+    prov = R.get("provenance") or {}
+    if not prov:
+        bad("RECON['provenance'] 为空 —— 每个关键数字都必须标注来源与置信度")
+    else:
+        ok(f"溯源表已填（{len(prov)} 项）")
+
+    # E2 等级合法性
+    legal = set(LEVEL_DESC)
+    illegal = {k: v.get("level") for k, v in prov.items()
+               if v.get("level") not in legal}
+    if illegal:
+        bad(f"provenance 里有非法等级：{illegal}（只能是 A/B/C/D）")
+    else:
+        ok("全部等级取值合法（A/B/C/D）")
+
+    # E3 ★ 关键几何量必须被覆盖
+    missing = []
+    for key, label in PROBE_KEYS:
+        val, exists = _get(key)
+        if not exists:
+            continue                      # 该项目没有这个键，跳过
+        if key not in prov:
+            missing.append(f"{key}（{label}）")
+    if missing:
+        bad(f"以下关键几何量未标来源：{'、'.join(missing)}"
+            f" —— 这正是上次「假定值当复原值交付」的漏网之处")
+    else:
+        ok(f"关键几何量来源齐全（抽查 {len(PROBE_KEYS)} 项）")
+
+    # E4 D 级（假定值）必须有说明
+    no_how = [k for k, v in prov.items()
+              if v.get("level") == "D" and not str(v.get("how", "")).strip()]
+    if no_how:
+        bad(f"以下 D 级（假定值）没有写明假定依据：{'、'.join(no_how)}")
+    else:
+        nd = sum(1 for v in prov.values() if v.get("level") == "D")
+        ok(f"D 级假定值均已写明依据（共 {nd} 项）")
+
+    # E5 ★ 标定可信度与 A/B 级数字是否相容
+    spread = R.get("anchor_spread_pct")
+    if spread is not None and spread > 15:
+        n_ab = sum(1 for v in prov.values() if v.get("level") in ("A", "B"))
+        if n_ab:
+            bad(f"锚点离散度 {spread:.1f}% > 15%，标定结果不可用，"
+                f"但仍有 {n_ab} 项标为 A/B 级 —— 等级与证据不符")
+        else:
+            ok(f"锚点离散度 {spread:.1f}% > 15%，已全部降级为 C/D 级 —— 处理正确")
+    elif spread is not None:
+        ok(f"锚点离散度 {spread:.1f}%（≤15%，标定可用）")
+
+    # E6 warp_ratio 与 A 级数字
+    wr = R.get("rectify_warp_ratio")
+    n_a = sum(1 for v in prov.values() if v.get("level") == "A")
+    if wr is not None and wr > 1.08 and n_a:
+        bad(f"warp_ratio {wr:.3f} > 1.08（矫正面失真），"
+            f"却有 {n_a} 项标为 A 级（实测）—— 失真面上量不出 A 级数据")
+    elif wr is not None:
+        ok(f"warp_ratio {wr:.3f}（{'≤1.08 可作 A 级依据' if wr <= 1.08 else '>1.08，已无 A 级数据'}）")
+
+    # E7 色板必须有免责声明
+    if R.get("palette") and not str(R.get("palette_caveat", "")).strip():
+        bad("填了 palette 但没有 palette_caveat —— "
+            "屏幕色不是色卡实测，必须随交付声明")
+    elif R.get("palette"):
+        ok("色板已附免责声明")
+
+    # E8 能力边界必须如实填写
+    if not R.get("limits"):
+        bad("RECON['limits'] 为空 —— 必须如实写明复原能力边界"
+            "（锚点分辨率、地平线可信度、哪些面没矫正）")
+    else:
+        ok(f"能力边界已记录（{len(R['limits'])} 条）")
+
+    # E9 保真度评估是否已跑
+    fid = R.get("fidelity") or {}
+    got = [k for k in ("ssim", "mean_de", "scale_err_pct") if fid.get(k) is not None]
+    if not got:
+        warn("fidelity_report.py 尚未跑（三项均为 None）。"
+             "交付前必须评估 —— 形态与色板都不能证明尺寸复原正确")
+    else:
+        s = fid.get("ssim")
+        de = fid.get("mean_de")
+        se = fid.get("scale_err_pct")
+        detail = []
+        if s is not None:
+            detail.append(f"SSIM {s:.3f}" + ("（合格）" if s >= 0.75 else "（偏低）"))
+        if de is not None:
+            detail.append(f"ΔE*76 {de:.1f}" + ("（可辨）" if de < 5 else "（需微调）"))
+        if se is not None:
+            detail.append(f"尺度误差 {se:.1f}%" + ("（可用）" if se <= 10 else "（需复核）"))
+        if se is not None and se > 25:
+            bad(f"尺度平均误差 {se:.1f}% > 25% —— 体量关系与原图有实质偏差")
+        else:
+            ok("保真度已评估：" + "，".join(detail))
+
+    # E10 等级分布
+    dist = {}
+    for v in prov.values():
+        dist[v.get("level")] = dist.get(v.get("level"), 0) + 1
+    order = {k: dist[k] for k in "ABCD" if k in dist}
+    warn(f"来源等级分布：A 实测 {order.get('A', 0)} / B 参考 {order.get('B', 0)} / "
+         f"C 量级 {order.get('C', 0)} / D 假定 {order.get('D', 0)}"
+         f" —— D 类必须在交付说明中逐条列出")
+
+    # E11 pending 清单
+    if not R.get("pending"):
+        warn("RECON['pending'] 为空 —— 交付说明里应列出待核项")
+    else:
+        ok(f"待核项已列出（{len(R['pending'])} 条）")
+
+
+# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dxf", default=os.path.join(HERE, "plan.dxf"))
     ap.add_argument("--skp-report", default=None)
     ap.add_argument("--report", default=None)
     ap.add_argument("--skip-dxf", action="store_true")
+    ap.add_argument("--skip-recon", action="store_true",
+                    help="施工图输入可显式跳过 E 段")
     args = ap.parse_args()
 
     print("=" * 74)
@@ -379,6 +542,9 @@ def main():
             check_report(args.report)
         else:
             warn(f"未找到方案正文 {args.report}")
+
+    if not args.skip_recon:
+        check_recon()
 
     print("\n" + "=" * 74)
     print(f"通过 {len(PASS)} 项 / 警告 {len(WARN)} 项 / 失败 {len(FAIL)} 项")

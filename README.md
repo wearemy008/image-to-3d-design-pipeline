@@ -15,12 +15,15 @@ DXF 356 图元、SketchUp 模型 12,042 面 / 20 材质 / 8 场景，外包尺�
 ## 流水线
 
 ```
- 一张平面图（位图/截图/照片）
+ 一张图纸 / 参考图（位图）
       │
- ① 识读 ──────► 识读报告（尺寸链、房间、标注）+ 标注图
-      │          → raster-cad-drawing-reading
+      ├─── 有标注尺寸（施工图）───► ①-A 读标注
+      │                              → raster-cad-drawing-reading
+      │
+      └─── 无标注（透视图/AIGC）─► ①-B 透视几何复原 ★
+                                     → img_probe.py
       ▼
- ② 几何复原 ──► plan_data.py（★ 唯一真源）+ DXF/DWG
+ ② 几何复原 ──► plan_data.py（★ 唯一真源，含 RECON 溯源段）+ DXF/DWG
       │          → make_dxf.py
       ▼
  ③ 空间策划 ──► 方案正文（自包含 HTML）+ 效果图集 + 技术经济指标
@@ -29,10 +32,73 @@ DXF 356 图元、SketchUp 模型 12,042 面 / 20 材质 / 8 场景，外包尺�
  ④ 三维建模 ──► build_model.rb ← 由真源生成 → SketchUp 模型 + 渲染图
       │          → make_skp_rb.py / su_pipeline.py
       ▼
- ⑤ 交付验收 ──► verify_consistency.py 四层校验 + 脚本归档
+ ⑤ 交付验收 ──► verify_consistency.py 五段校验 + fidelity_report.py 保真度评估
 ```
 
 每个阶段都有**可交付物**，不是内部中间态。
+
+### ★ 无标注透视图的复原能力
+
+输入是一张**没有尺寸标注**的透视效果图 / AIGC 渲染时，
+尺寸不能靠「假定」，靠**透视几何**：
+
+```
+比例尺(mm/px) = h_cam / (y − y_h)
+h_cam = H · (y_b − y_h) / h_px      ← 用一个已知高度的物体标定
+```
+
+焦距在推导中被消掉了 —— **不需要 EXIF，也不需要猜 AIGC 的虚构相机**。
+标定一次之后，图上任意位置、任意深度的水平尺寸都能直接读出来。
+
+```bash
+python scripts/img_probe.py info     图.png     # 体检
+python scripts/img_probe.py horizon  图.png --lines "..." --json h.json   # 测地平线
+python scripts/img_probe.py scale    图.png --horizon 355 --anchors "..." # 标定相机高
+python scripts/img_probe.py rectify  图.png --quad "x,y;x,y;x,y;x,y" --w 36000  # 矫正立面
+python scripts/img_probe.py palette  图.png -k 6 --pair                    # 取色板
+python scripts/img_probe.py probe    图.png --horizon 355 --anchors "..." # 一条龙
+```
+
+**最可靠的手段是 `rectify`**：给定一个实际为矩形立面的四点，
+用单应性拉成正投影面，拉正后逐像素量测 = 真实尺寸。
+看 `warp_ratio` 判质量（≤1.08 可靠，>1.25 作废）。
+
+### ★ 诚实的边界
+
+2026-09-29 实测（570×479 的 AIGC 黄昏效果图）：
+
+| 目标 | 可行性 |
+|---|---|
+| 层数、开间节奏、悬挑比 | ★★★ 可信 |
+| 体量块面关系 | ★★★ 可信 |
+| 材质色系与相对明暗 | ★★ 可信 |
+| **绝对尺寸** | **±10~25%，须标 B 级** |
+| 施工级精度 | **做不到** |
+
+**实测的头号限制**：AIGC 图上的人物只有 **14~18 像素**高，
+端点定位误差 ±8~11%，叠加语义误差后总误差 **>20%**。
+
+因此本技能引入 **RECON 溯源段**：每个数字都要打
+**A 实测 / B 参考 / C 量级 / D 假定** 标签，
+`verify_consistency.py` 的 **E 段**会交叉校验「等级与证据是否相符」。
+
+### ★ 为什么需要 E 段与保真度评估
+
+上一轮美术馆交付，A~D 四段校验 **28 项全过、0 失败**。
+事后用 `fidelity_report.py` 量出：
+
+    SSIM = 0.216（不合格）   尺度误差 = 52.5%   平均 ΔE*76 = 34
+
+**四段验的是「图纸/模型/方案三方自洽」，不验「数字对不对」。**
+三者确实自洽 —— 因为都从同一个 `plan_data.py` 取数。
+但**没有任何一段能发现整套尺寸是错的**。
+
+一致性校验 ≠ 正确性校验，**两者都要做**。
+
+```bash
+python scripts/fidelity_report.py --ref 原图.png --rep 渲染/SK_06_入口人视.png \
+    --scale-ref "x1,y1,x2,y2;..." --scale-rep "..." -o 保真度报告.html
+```
 
 ---
 
@@ -82,7 +148,9 @@ scripts/
   plan_data.py                    ★ 单一几何真源（含 A2 户型完整示例）
   make_dxf.py                     真源 → DXF + matplotlib 预览 PNG
   make_skp_rb.py                  真源 → SketchUp 建模脚本（带 def/end 结构自检）
-  verify_consistency.py           四层一致性校验（真源自洽 / DXF / SKP / 方案）
+  img_probe.py                    透视复原工具箱（地平线/尺度标定/单应性矫正/色板）★
+  fidelity_report.py              保真度评估（尺度误差 + SSIM + 色差 -> HTML 报告）★
+  verify_consistency.py           五层一致性校验（真源/DXF/SKP/方案/溯源）
   su_kit.rb                       SketchUp 参数化建模工具箱（项目无关）
   su_render.rb                    SketchUp 出图工具箱（项目无关）
   su_pipeline.py                  分步编排器（★ 解决长请求假死）
@@ -92,7 +160,8 @@ scripts/
   embed_images.py                 占位符 → base64 内嵌 HTML
   qa_shot.js                      Edge 无头质检（查坏图）
 references/
-  pipeline-contract.md            阶段间数据契约（识读映射表 / views.json / 报告格式）
+  reconstruction-from-perspective.md  透视复原方法论（公式推导 + 实测边界 + AIGC 陷阱）★
+  pipeline-contract.md            阶段间数据契约（识读映射 / RECON 段 / views.json）
   su-kit-api.md                   su_kit.rb 与 su_render.rb 完整 API
   pitfalls.md                     32 条踩坑全记录（现象 → 根因 → 解法）
   consistency-checklist.md        交付前逐项核对清单 + 症状对照表
@@ -158,7 +227,8 @@ DXF ↔ 真源、SKP ↔ 真源（含外凸量换算）、方案 ↔ 真源。
 
 | 阶段 | 交给 |
 |---|---|
-| ① 位图识读 | `raster-cad-drawing-reading` |
+| ①-A 位图识读（有标注） | `raster-cad-drawing-reading` |
+| ①-B 透视复原（无标注） | **本技能独有** `img_probe.py`（委托方只读标注文字） |
 | ② DXF → DWG | `image-to-cad` |
 | ③ 方案与效果图 | `design-proposal-package` |
 | ④ SketchUp 底层（插件/启动/API） | `sketchup-mcp-automation` |
